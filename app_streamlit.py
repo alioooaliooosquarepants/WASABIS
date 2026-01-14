@@ -131,6 +131,18 @@ def on_message(client, userdata, msg):
         st.error(f"MQTT error: {e}")
 
 # ===========================
+# 🤖 LOAD ML MODEL
+# ===========================
+@st.cache_resource
+def load_model():
+    try:
+        with open(MODEL_FILE, "rb") as f:
+            return pickle.load(f)
+    except:
+        return None
+
+
+# ===========================
 # MAIN
 # ===========================
 def main():
@@ -173,7 +185,47 @@ def main():
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
         st.line_chart(df.set_index("datetime")["water_level_cm"])
+        # ===========================
+    # 🤖 AI PREDICTION
+    # ===========================
+    model = load_model()
+
+    if model and data:
+        st.subheader("🤖 AI Flood Prediction")
+
+        try:
+            latest_df = pd.DataFrame([data])
+
+            # Feature engineering (HARUS sama dengan training)
+            latest_df["water_level_norm"] = (
+                latest_df["water_level_cm"] / standard_height
+                if standard_height > 0 else 0
+            )
+            latest_df["rain"] = (latest_df["rain_level"] > 0).astype(int)
+
+            X = latest_df[[
+                "water_level_norm",
+                "rain",
+                "temperature_c",
+                "humidity_pct"
+            ]]
+
+            pred = model.predict(X)[0]
+            emoji = normalize_emoji(pred)
+
+            st.markdown(f"""
+            <div style="padding:30px; border-radius:20px;
+                        background:#01579b; color:white;
+                        text-align:center;">
+                <h1 style="font-size:70px;">{emoji}</h1>
+                <h2>{pred}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+
+        except Exception as e:
+            st.warning(f"Prediction error: {e}")
 
 if __name__ == "__main__":
     main()
+
 
