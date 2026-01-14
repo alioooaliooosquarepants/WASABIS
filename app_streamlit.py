@@ -18,7 +18,7 @@ import hashlib
 # ===========================
 MODEL_FILE = "decision_tree.pkl"
 CSV_FILE = "river_data_log.csv"
-REFRESH_INTERVAL = 3  # seconds
+REFRESH_INTERVAL = 3
 RECENT_MAX = 500
 MQTT_MODEL_TOPIC = "river/monitoring/model"
 MQTT_MODEL_SECRET = os.getenv("MQTT_MODEL_SECRET", "")
@@ -34,11 +34,7 @@ buf_lock = threading.Lock()
 # ===========================
 def normalize_emoji(label):
     l = label.upper()
-    return {
-        "AMAN": "🟢",
-        "WASPADA": "🟡",
-        "BAHAYA": "🔴"
-    }.get(l, "❓")
+    return {"AMAN": "🟢", "WASPADA": "🟡", "BAHAYA": "🔴"}.get(l, "❓")
 
 def status_box(title, level, mode="danger"):
     if mode == "danger":
@@ -75,50 +71,28 @@ def append_to_csv(row):
     except:
         return False
 
-# ===========================
-# 🔥 FIXED: READ LATEST CSV ROW
-# ===========================
-@st.cache_data(ttl=1)  # 1s cache for real-time
+# 🔥 LATEST CSV ROW - ALWAYS FRESH
+@st.cache_data(ttl=1)
 def get_latest_csv_row():
-    """🔥 ALWAYS GETS LATEST CSV ROW"""
     if not os.path.exists(CSV_FILE):
         return None
-    
     try:
         df_csv = pd.read_csv(CSV_FILE)
         if df_csv.empty:
             return None
-        return df_csv.iloc[-1].to_dict()  # 🔥 LATEST ROW
+        return df_csv.iloc[-1].to_dict()
     except:
         return None
 
-def get_all_data(standard_height):
-    """🔥 COMBINE MQTT + LATEST CSV"""
-    mqtt_data = []
-    csv_latest = get_latest_csv_row()
-    
-    # MQTT buffer
-    with buf_lock:
-        mqtt_data = list(recent_buf)
-    
-    # Feature engineering for MQTT data
-    if mqtt_data:
-        df_mqtt = pd.DataFrame(mqtt_data)
-        df_mqtt["water_level_norm"] = df_mqtt["water_level_cm"] / standard_height
-        df_mqtt["water_rise_rate"] = df_mqtt["water_level_cm"].diff().fillna(0)
-        df_mqtt["rain"] = (df_mqtt["rain_level"] > 0).astype(int)
-    else:
-        df_mqtt = pd.DataFrame()
-    
-    # Always prioritize latest CSV row for current status
-    return df_mqtt, csv_latest
-
 # ===========================
-# LOGGING & MQTT (unchanged)
+# LOGGING
 # ===========================
 logging.basicConfig(filename="audit_log.txt", level=logging.INFO, format='%(asctime)s %(message)s')
 def log_event(event): logging.info(event)
 
+# ===========================
+# MQTT CALLBACKS
+# ===========================
 def mqtt_model_callback(client, userdata, message):
     try:
         payload = json.loads(message.payload.decode())
@@ -152,59 +126,83 @@ def mqtt_data_callback(client, userdata, message):
 # ===========================
 def main():
     st.set_page_config(page_title="River Monitor", layout="wide")
-    st.title("🌊 River Monitor — 🔄 3s Auto-Refresh")
+    st.title("🌊 River Monitor — Latest CSV + 3s Refresh")
 
     # ===========================
-    # SIDEBAR
+    # 🔥 FIXED SIDEBAR - NAMED PARAMETERS ONLY
     # ===========================
-    st.sidebar.title("⚙️ Config")
-    mqtt_broker = st.sidebar.text_input("Broker", "broker.hivemq.com", key="broker")
-    mqtt_port = st.sidebar.number_input("Port", 1883, 1, 65535, key="port")
-    mqtt_topic = st.sidebar.text_input("Topic", "river/monitoring/data", key="topic")
+    st.sidebar.title("⚙️ Configuration")
     
-    standard_height = st.sidebar.number_input("Std Height (cm)", 50.0, 0.0, 1000.0, key="std_h")
+    mqtt_broker = st.sidebar.text_input("MQTT Broker", value="broker.hivemq.com", key="mqtt_broker")
     
-    # Auto-refresh
-    st.sidebar.subheader("🔄 Refresh")
-    enable_refresh = st.sidebar.toggle("Auto-Refresh 3s", True, key="auto_ref")
+    # ✅ FIXED: NAMED PARAMETERS
+    mqtt_port = st.sidebar.number_input(
+        "MQTT Port", 
+        min_value=1, 
+        max_value=65535, 
+        value=1883,  # Named parameter!
+        step=1,
+        key="mqtt_port"
+    )
     
-    refresh_btn = st.sidebar.button("🔄 Refresh Now", key="refresh")
+    mqtt_data_topic = st.sidebar.text_input("Data Topic", value="river/monitoring/data", key="mqtt_data_topic")
+    
+    standard_height = st.sidebar.number_input(
+        "Standard Height (cm)", 
+        min_value=0.0, 
+        max_value=1000.0, 
+        value=50.0,
+        step=1.0,
+        key="standard_height"
+    )
+    
+    # Auto-refresh toggle
+    st.sidebar.subheader("🔄 Auto Refresh")
+    enable_auto_refresh = st.sidebar.toggle("Enable 3s Refresh", value=True, key="auto_refresh")
+    
+    refresh_btn = st.sidebar.button("🔄 Refresh Now", key="refresh_btn")
 
-    # CSV info
+    # CSV Status
     if os.path.exists(CSV_FILE):
         df_csv = pd.read_csv(CSV_FILE)
         st.sidebar.metric("CSV Rows", len(df_csv))
-        st.sidebar.success("✅ Latest CSV shown")
+        st.sidebar.success("✅ Latest CSV row shown")
 
     # ===========================
-    # MQTT
+    # MQTT SETUP
     # ===========================
     @st.cache_resource
-    def init_mqtt(broker, port, topic):
+    def init_mqtt(broker, port, data_topic, model_topic):
         ensure_csv_header()
         client = mqtt.Client()
         client.on_message = lambda c,u,m: (
-            mqtt_model_callback(c,u,m) if m.topic == MQTT_MODEL_TOPIC else mqtt_data_callback(c,u,m)
+            mqtt_model_callback(c,u,m) if m.topic == model_topic else mqtt_data_callback(c,u,m)
         )
-        client.connect(broker, port)
-        client.subscribe(topic)
-        client.subscribe(MQTT_MODEL_TOPIC)
-        client.loop_start()
-        return client
+        try:
+            client.connect(broker, int(port))
+            client.subscribe(data_topic)
+            client.subscribe(model_topic)
+            client.loop_start()
+            st.sidebar.success("✅ MQTT Connected")
+            return client
+        except Exception as e:
+            st.sidebar.error(f"❌ MQTT: {e}")
+            return None
 
-    mqtt_client = init_mqtt(mqtt_broker, mqtt_port, mqtt_topic)
+    mqtt_client = init_mqtt(mqtt_broker, mqtt_port, mqtt_data_topic, MQTT_MODEL_TOPIC)
 
     # ===========================
-    # 🔥 AUTO-REFRESH + DATA LOAD
+    # 🔥 DATA LOADING - MQTT + LATEST CSV
     # ===========================
-    df_mqtt, csv_latest = get_all_data(standard_height)
-    
+    df_mqtt_data = pd.DataFrame(list(recent_buf)) if len(recent_buf) > 0 else pd.DataFrame()
+    csv_latest = get_latest_csv_row()
+
     # Auto-refresh logic
-    if enable_refresh:
+    if enable_auto_refresh:
         if 'refresh_count' not in st.session_state:
             st.session_state.refresh_count = 0
         st.session_state.refresh_count += 1
-        st.sidebar.metric("Refresh #", st.session_state.refresh_count)
+        st.sidebar.metric("Refresh Count", st.session_state.refresh_count)
         time.sleep(REFRESH_INTERVAL)
         st.rerun()
 
@@ -213,43 +211,48 @@ def main():
         st.rerun()
 
     # ===========================
-    # 🔥 CURRENT STATUS - ALWAYS SHOWS LATEST CSV ROW
+    # 🔥 CURRENT STATUS - LATEST CSV ROW
     # ===========================
     if csv_latest is not None:
-        # 🔥 PRIORITY: LATEST CSV ROW
         water = csv_latest["water_level_cm"]
         rain_level = csv_latest["rain_level"]
         danger = csv_latest.get("danger_level", 0)
-        timestamp = pd.to_datetime(csv_latest["datetime"])
+        timestamp_str = csv_latest["datetime"]
         
         col1, col2, col3, col4 = st.columns(4)
-        with col1: st.metric("Water", f"{water:.1f} cm")
-        with col2: status_box("Danger", int(danger), "danger")
-        with col3: status_box("Rain", int(rain_level > 0), "rain")
-        with col4: st.metric("Time", timestamp.strftime("%H:%M:%S"))
+        with col1:
+            st.metric("Water Level", f"{water:.1f} cm")
+        with col2:
+            status_box("Danger", int(danger), "danger")
+        with col3:
+            status_box("Rain", int(rain_level > 0), "rain")
+        with col4:
+            st.metric("Updated", timestamp_str[-8:])  # Show time only
         
-        st.success(f"✅ Showing **LATEST CSV ROW**: {water:.1f}cm at {timestamp}")
+        st.success(f"✅ **LATEST CSV ROW**: {water:.1f}cm")
     else:
-        st.warning("⏳ No CSV data yet - waiting for MQTT...")
+        st.warning("⏳ No data in CSV yet - waiting for MQTT...")
+        st.info("Send test data: `mosquitto_pub -h broker.hivemq.com -t \"river/monitoring/data\" -m '{\"water_level_cm\":25.5}'`")
         return
 
     # ===========================
-    # CHARTS - MQTT DATA
+    # CHARTS
     # ===========================
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("📈 Water Level History")
-        if not df_mqtt.empty:
-            st.line_chart(df_mqtt["water_level_cm"], use_container_width=True)
+        st.subheader("📈 Water Level History (MQTT)")
+        if not df_mqtt_data.empty:
+            st.line_chart(df_mqtt_data["water_level_cm"], use_container_width=True)
+            st.caption(f"{len(df_mqtt_data)} live points")
         else:
-            st.info("No MQTT history yet")
+            st.info("No MQTT data yet")
     
     with col2:
-        st.subheader("🌡️ Environment")
-        if not df_mqtt.empty and len(df_mqtt) > 1:
+        st.subheader("🌡️ Environment (MQTT)")
+        if not df_mqtt_data.empty and len(df_mqtt_data) > 1:
             env_df = pd.DataFrame({
-                "Temp": df_mqtt["temperature_c"],
-                "Humidity": df_mqtt["humidity_pct"]
+                "Temp": df_mqtt_data["temperature_c"],
+                "Humidity": df_mqtt_data["humidity_pct"]
             })
             st.line_chart(env_df, use_container_width=True)
 
@@ -265,11 +268,9 @@ def main():
 
     model = load_model()
     if model and csv_latest:
-        st.subheader("🤖 Prediction")
-        features = ["water_level_cm", "rain_level", "temperature_c", "humidity_pct"]
+        st.subheader("🤖 ML Prediction")
         try:
-            # Use CSV latest row for prediction
-            pred_df = pd.DataFrame([csv_latest])[features]
+            pred_df = pd.DataFrame([csv_latest])
             pred_df["water_level_norm"] = pred_df["water_level_cm"] / standard_height
             pred_df["rain"] = (pred_df["rain_level"] > 0).astype(int)
             
@@ -283,7 +284,7 @@ def main():
             </div>
             """, unsafe_allow_html=True)
         except:
-            st.info("Prediction ready when model matches features")
+            st.info("ℹ️ Model loaded - add features to match")
 
 if __name__ == "__main__":
     main()
