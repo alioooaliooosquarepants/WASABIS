@@ -176,24 +176,17 @@ def main():
        if not data:
         st.info("Waiting for data...")
         return
-
     st.subheader("💧 Water Level")
-
     col1, col2, col3 = st.columns(3)
-
     with col1:
         st.metric(
             label="Water Level (cm)",
             value=f"{float(data['water_level_cm']):.1f}"
         )
-
     with col2:
         status_box("Danger", data["danger_level"])
-
     with col3:
         status_box("Rain", int(data["rain_level"] > 0), "rain")
-
-
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
         st.line_chart(df.set_index("datetime")["water_level_cm"])
@@ -246,5 +239,6 @@ def main():
             st.warning(f"Prediction error: {e}")
 if __name__ == "__main__":
     main()
+
 
 
