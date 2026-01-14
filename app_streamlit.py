@@ -186,7 +186,7 @@ def main():
         df = pd.DataFrame(st.session_state.logs)
         st.line_chart(df.set_index("datetime")["water_level_cm"])
        # ===========================
-    # 🤖 AI FLOOD PREDICTION (FINAL FIX)
+    # 🤖 AI FLOOD PREDICTION (ORDER-SAFE)
     # ===========================
     model = load_model()
 
@@ -194,7 +194,7 @@ def main():
         st.subheader("🤖 AI Flood Prediction")
 
         try:
-            # ---- water rise rate ----
+            # ---- compute features ----
             if len(st.session_state.logs) >= 2:
                 prev = st.session_state.logs[-2]["water_level_cm"]
                 curr = st.session_state.logs[-1]["water_level_cm"]
@@ -202,16 +202,21 @@ def main():
             else:
                 water_rise_rate = 0.0
 
-            # ---- EXACT FEATURES USED DURING TRAINING ----
-            X = pd.DataFrame([{
+            features = {
                 "water_level_norm": (
                     data["water_level_cm"] / standard_height
                     if standard_height > 0 else 0.0
                 ),
                 "rain": int(data["rain_level"] > 0),
                 "water_rise_rate": water_rise_rate,
-                "humidity_pct": float(data["humidity_pct"])
-            }])
+                "humidity_pct": float(data["humidity_pct"]),
+            }
+
+            # ---- FORCE TRAINING ORDER ----
+            X = pd.DataFrame(
+                [[features[name] for name in model.feature_names_in_]],
+                columns=model.feature_names_in_
+            )
 
             pred = model.predict(X)[0]
             emoji = normalize_emoji(pred)
