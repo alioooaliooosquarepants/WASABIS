@@ -193,31 +193,24 @@ if model and data:
     st.subheader("🤖 AI Flood Prediction")
 
     try:
-        latest_df = pd.DataFrame([data])
-
-        # ===== Feature engineering (SESUI TRAINING) =====
-        latest_df["water_level_norm"] = (
-            latest_df["water_level_cm"] / standard_height
-            if standard_height > 0 else 0
-        )
-
-        latest_df["rain"] = (latest_df["rain_level"] > 0).astype(int)
-
-        # 🔥 water_rise_rate (WAJIB ADA)
+        # ---- build feature dataframe EXPLICITLY ----
         if len(st.session_state.logs) >= 2:
             prev = st.session_state.logs[-2]["water_level_cm"]
             curr = st.session_state.logs[-1]["water_level_cm"]
-            latest_df["water_rise_rate"] = curr - prev
+            water_rise_rate = curr - prev
         else:
-            latest_df["water_rise_rate"] = 0.0
+            water_rise_rate = 0.0
 
-        # ===== PREDICT (FEATURE HARUS SAMA & URUT) =====
-        X = latest_df[[
-            "water_level_norm",
-            "rain",
-            "water_rise_rate"
-        ]]
+        X = pd.DataFrame([{
+            "water_level_norm": (
+                data["water_level_cm"] / standard_height
+                if standard_height > 0 else 0.0
+            ),
+            "rain": int(data["rain_level"] > 0),
+            "water_rise_rate": water_rise_rate
+        }])
 
+        # ---- prediction ----
         pred = model.predict(X)[0]
         emoji = normalize_emoji(pred)
 
@@ -232,6 +225,6 @@ if model and data:
 
     except Exception as e:
         st.warning(f"Prediction error: {e}")
-
 if __name__ == "__main__":
     main()
+
