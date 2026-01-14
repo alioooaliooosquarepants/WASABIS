@@ -14,7 +14,7 @@ import hmac
 import hashlib
 
 # ===========================
-# CONFIG (NO WIDGETS HERE)
+# CONFIG
 # ===========================
 MODEL_FILE = "decision_tree.pkl"
 CSV_FILE = "river_data_log.csv"
@@ -59,28 +59,16 @@ def status_box(title, level, mode="danger"):
     """, unsafe_allow_html=True)
 
 def ensure_csv_header():
-    """🔥 CREATE/ENSURE CSV EXISTS WITH PROPER HEADERS"""
+    """Create/ensure CSV exists with proper headers"""
     if not os.path.exists(CSV_FILE):
         df_init = pd.DataFrame(columns=[
             "timestamp", "datetime", "water_level_cm", "temperature_c", 
             "humidity_pct", "danger_level", "rain_level"
         ])
         df_init.to_csv(CSV_FILE, index=False)
-        st.sidebar.success(f"✅ Created {CSV_FILE} for GitHub sync")
 
-# ===========================
-# LOGGING
-# ===========================
-logging.basicConfig(filename="audit_log.txt", level=logging.INFO, format='%(asctime)s %(message)s')
-
-def log_event(event):
-    logging.info(event)
-
-# ===========================
-# 🔥 NEW: CSV APPENDING FUNCTION
-# ===========================
 def append_to_csv(row):
-    """🔥 APPEND SINGLE ROW TO CSV (GitHub ready)"""
+    """Append single row to CSV (GitHub ready)"""
     try:
         ensure_csv_header()
         df_new = pd.DataFrame([row])
@@ -91,7 +79,15 @@ def append_to_csv(row):
         return False
 
 # ===========================
-# MQTT CALLBACKS - NOW SAVES TO CSV
+# LOGGING
+# ===========================
+logging.basicConfig(filename="audit_log.txt", level=logging.INFO, format='%(asctime)s %(message)s')
+
+def log_event(event):
+    logging.info(event)
+
+# ===========================
+# MQTT CALLBACKS - WITH CSV SAVE
 # ===========================
 def mqtt_model_callback(client, userdata, message):
     try:
@@ -99,25 +95,16 @@ def mqtt_model_callback(client, userdata, message):
         meta = json.loads(payload)
         model_b64 = meta.get("model_b64")
         if model_b64:
-            sig = meta.get("signature")
-            if sig and MQTT_MODEL_SECRET:
-                calc = hmac.new(MQTT_MODEL_SECRET.encode('utf-8'), model_b64.encode('utf-8'), hashlib.sha256).hexdigest()
-                if not hmac.compare_digest(calc, sig):
-                    logging.error("Model signature mismatch")
-                    return
             model_bytes = base64.b64decode(model_b64.encode('ascii'))
             with open(MODEL_FILE, 'wb') as mf:
                 mf.write(model_bytes)
-            try:
-                st.cache_resource.clear()
-            except:
-                pass
+            st.cache_resource.clear()
             logging.info("Model updated via MQTT")
     except Exception as e:
         logging.exception("Model MQTT error: %s", e)
 
 def mqtt_data_callback(client, userdata, message):
-    """🔥 MODIFIED: NOW ALSO SAVES TO CSV FOR GITHUB"""
+    """MQTT data handler - saves to memory + CSV"""
     try:
         payload = json.loads(message.payload.decode())
         row = {
@@ -130,26 +117,34 @@ def mqtt_data_callback(client, userdata, message):
             "rain_level": int(payload.get("rain_level", 0))
         }
         
-        # 🔥 ADD TO MEMORY BUFFER (for real-time display)
+        # Add to memory buffer (real-time display)
         with buf_lock:
             recent_buf.append(row)
         
-        # 🔥 NEW: SAVE TO CSV (for GitHub persistence)
+        # Save to CSV (GitHub persistence)
         append_to_csv(row)
-        log_event(f"Data saved to CSV: water={row['water_level_cm']:.1f}cm")
         
     except Exception as e:
         logging.exception("MQTT data error: %s", e)
 
 # ===========================
+# 🔥 AUTO-REFRESH COUNTER
+# ===========================
+def auto_refresh():
+    """Trigger refresh every 3 seconds"""
+    if 'refresh_counter' not in st.session_state:
+        st.session_state.refresh_counter = 0
+    
+    st.session_state.refresh_counter += 1
+    time.sleep(REFRESH_INTERVAL)
+    st.rerun()
+
+# ===========================
 # MAIN FUNCTION
 # ===========================
 def main():
-    # ===========================
-    # STREAMLIT SETTINGS FIRST
-    # ===========================
     st.set_page_config(page_title="River Monitor Dashboard", layout="wide")
-    st.title("🌊 River Monitoring Dashboard — Real-Time + GitHub CSV")
+    st.title("🌊 River Monitoring Dashboard — 🔄 Auto-Refresh 3s")
 
     st.markdown("""
     <style>
@@ -158,16 +153,14 @@ def main():
     """, unsafe_allow_html=True)
 
     # ===========================
-    # SIDEBAR - ALL WIDGETS HERE
+    # SIDEBAR
     # ===========================
     st.sidebar.title("⚙️ Configuration")
     
-    # MQTT Settings
     mqtt_broker = st.sidebar.text_input("MQTT Broker", value="broker.hivemq.com", key="mqtt_broker")
     mqtt_port = st.sidebar.number_input("MQTT Port", value=1883, min_value=1, max_value=65535, key="mqtt_port")
     mqtt_data_topic = st.sidebar.text_input("Data Topic", value="river/monitoring/data", key="mqtt_data_topic")
     
-    # Dashboard Settings  
     standard_water_height = st.sidebar.number_input(
         "Standard Water Height (cm)", 
         min_value=0.0, max_value=1000.0, 
@@ -175,32 +168,33 @@ def main():
         key="standard_height"
     )
     
-    # 🔥 CSV STATUS
+    # Auto-refresh toggle
+    st.sidebar.subheader("🔄 Auto-Refresh")
+    enable_auto_refresh = st.sidebar.toggle("Enable Auto-Refresh (3s)", value=True, key="auto_refresh_toggle")
+    
+    # CSV Status
     st.sidebar.subheader("📊 CSV Status")
     if os.path.exists(CSV_FILE):
         csv_size = os.path.getsize(CSV_FILE)
-        st.sidebar.metric("CSV Size", f"{csv_size/1000:.1f} KB")
-        st.sidebar.success("✅ Ready for GitHub sync")
-    else:
-        st.sidebar.info("No CSV yet - waiting for MQTT data")
+        csv_rows = len(pd.read_csv(CSV_FILE))
+        st.sidebar.metric("CSV Rows", csv_rows)
+        st.sidebar.metric("File Size", f"{csv_size/1000:.1f} KB")
+        st.sidebar.success("✅ GitHub Ready")
     
     # Manual Override
     st.sidebar.subheader("🔧 Manual Override")
     manual_water = st.sidebar.number_input("Water Level (cm)", min_value=0.0, max_value=1000.0, value=None, key="manual_water")
-    manual_temp = st.sidebar.number_input("Temperature (°C)", min_value=-10.0, max_value=80.0, value=None, key="manual_temp")
-    manual_humidity = st.sidebar.number_input("Humidity (%)", min_value=0.0, max_value=100.0, value=None, key="manual_humidity")
     manual_rain = st.sidebar.selectbox("Rain", [None, 0, 1], key="manual_rain")
-    manual_danger = st.sidebar.selectbox("Danger Override", [None, "Aman", "Waspada", "Bahaya"], key="manual_danger")
     apply_manual = st.sidebar.button("Apply Override", key="apply_manual")
     
-    refresh_btn = st.sidebar.button("🔄 Refresh Data", key="refresh")
+    refresh_btn = st.sidebar.button("🔄 Manual Refresh", key="refresh")
 
     # ===========================
     # MQTT SETUP
     # ===========================
     @st.cache_resource
     def init_mqtt(broker, port, data_topic, model_topic):
-        ensure_csv_header()  # 🔥 ENSURE CSV EXISTS ON START
+        ensure_csv_header()
         client = mqtt.Client()
         client.on_message = lambda c,u,m: (
             mqtt_model_callback(c,u,m) if m.topic == model_topic else mqtt_data_callback(c,u,m)
@@ -210,7 +204,7 @@ def main():
             client.subscribe(data_topic)
             client.subscribe(model_topic)
             client.loop_start()
-            st.sidebar.success("✅ MQTT Connected + CSV Ready")
+            st.sidebar.success("✅ MQTT Connected")
             return client
         except Exception as e:
             st.sidebar.error(f"❌ MQTT Error: {e}")
@@ -219,42 +213,48 @@ def main():
     mqtt_client = init_mqtt(mqtt_broker, mqtt_port, mqtt_data_topic, MQTT_MODEL_TOPIC)
 
     # ===========================
+    # 🔥 AUTO-REFRESH LOGIC
+    # ===========================
+    if enable_auto_refresh:
+        # Show refresh status
+        st.sidebar.metric("Refresh Counter", st.session_state.get('refresh_counter', 0))
+        st.sidebar.info(f"🔄 Auto-refreshing every {REFRESH_INTERVAL}s...")
+        
+        # Trigger auto-refresh
+        if 'refresh_counter' not in st.session_state:
+            st.session_state.refresh_counter = 0
+        st.session_state.refresh_counter += 1
+        
+        # Schedule next refresh
+        time.sleep(REFRESH_INTERVAL)
+        st.rerun()
+
+    # ===========================
     # DATA LOADING
     # ===========================
-    @st.cache_data(ttl=REFRESH_INTERVAL)
+    @st.cache_data(ttl=1)  # 1 second cache for fast updates
     def load_data(std_height):
         with buf_lock:
             df = pd.DataFrame(list(recent_buf))
         
-        # 🔥 ALSO LOAD FROM CSV AS BACKUP
         if df.empty and os.path.exists(CSV_FILE):
             csv_df = pd.read_csv(CSV_FILE)
             df = pd.concat([df, csv_df.tail(RECENT_MAX)], ignore_index=True)
         
         if not df.empty:
-            # Data validation
             df = df[(df["water_level_cm"].between(0, 1000)) &
                    (df["temperature_c"].between(-10, 80)) &
                    (df["humidity_pct"].between(0, 100))]
-            
-            # Fill missing data
             df = df.fillna(method="ffill").fillna(method="bfill")
-            
-            # Feature engineering
             df["water_level_norm"] = df["water_level_cm"] / std_height
             df["water_rise_rate"] = df["water_level_cm"].diff().fillna(0)
             df["rain"] = (df["rain_level"] > 0).astype(int)
-            
         return df
 
-    # Load data
-    if refresh_btn:
-        st.cache_data.clear()
-    
     df = load_data(standard_water_height)
     
     if df.empty:
-        st.info("⏳ Waiting for MQTT data... CSV will be created automatically.")
+        st.info("⏳ Waiting for MQTT data...")
         st.stop()
 
     # ===========================
@@ -265,7 +265,6 @@ def main():
     rain = last["rain"]
     danger = last.get("danger_level", 0)
 
-    # Status cards
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Water Level", f"{water:.1f} cm")
@@ -279,17 +278,18 @@ def main():
     # ===========================
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("📈 Water Level")
-        chart_data = df.set_index("datetime")["water_level_cm"] if "datetime" in df else df["water_level_cm"]
-        st.line_chart(chart_data)
+        st.subheader("📈 Water Level (Live)")
+        chart_data = df["water_level_cm"] if len(df) > 0 else pd.Series([])
+        st.line_chart(chart_data, use_container_width=True)
     
     with col2:
         st.subheader("🌡️ Environment")
-        env_data = pd.DataFrame({
-            "Temp": df["temperature_c"],
-            "Humidity": df["humidity_pct"]
-        })
-        st.line_chart(env_data)
+        if len(df) > 1:
+            env_data = pd.DataFrame({
+                "Temp": df["temperature_c"],
+                "Humidity": df["humidity_pct"]
+            })
+            st.line_chart(env_data, use_container_width=True)
 
     # ===========================
     # ML PREDICTION
@@ -302,54 +302,33 @@ def main():
             return None
 
     model = load_model()
-    features = ["water_level_norm", "water_rise_rate", "rain", "humidity_pct"]
-    
     if model and not df.empty:
         st.subheader("🤖 ML Prediction")
-        
+        features = ["water_level_norm", "water_rise_rate", "rain", "humidity_pct"]
         latest = df[features].iloc[-1:].copy()
         
-        # Manual override
-        if apply_manual:
-            if manual_water is not None:
-                latest["water_level_norm"] = manual_water / standard_water_height
-            if manual_rain is not None:
-                latest["rain"] = manual_rain
-            if manual_humidity is not None:
-                latest["humidity_pct"] = manual_humidity
+        if apply_manual and manual_water is not None:
+            latest["water_level_norm"] = manual_water / standard_water_height
         
         try:
-            if hasattr(model, 'predict_proba'):
-                proba = model.predict_proba(latest)
-                confidence = np.max(proba)
-                prediction = model.predict(latest)[0]
-            else:
-                prediction = model.predict(latest)[0]
-                confidence = None
-            
-            # Display
+            prediction = model.predict(latest)[0]
             emoji = normalize_emoji(prediction)
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"""
-                <div style="padding:25px; border-radius:15px; background:#0277bd; color:white; text-align:center;">
-                    <h2>Prediction</h2>
-                    <h1 style="font-size:60px;">{emoji}</h1>
-                    <h2>{prediction}</h2>
-                    {f'<p>Confidence: {confidence:.1%}</p>' if confidence else ''}
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Risk horizon
-            rise_rate = df["water_rise_rate"].iloc[-1]
-            if rise_rate > 0:
-                time_to_danger = (35 - water) / rise_rate * 60
-                st.info(f"⏰ Estimated {time_to_danger:.0f} min to danger level")
-                
-        except Exception as e:
-            st.error(f"Prediction error: {e}")
-    else:
-        st.warning("⚠️ No ML model found. Place 'decision_tree.pkl' in app directory.")
+            st.markdown(f"""
+            <div style="padding:30px; border-radius:20px; background:#0277bd; color:white; text-align:center;">
+                <h1 style="font-size:70px;">{emoji}</h1>
+                <h2>{prediction}</h2>
+                <p>Water: {water:.1f}cm</p>
+            </div>
+            """, unsafe_allow_html=True)
+        except:
+            st.warning("Prediction error")
+
+    # ===========================
+    # LIVE STATUS
+    # ===========================
+    st.sidebar.markdown("---")
+    st.sidebar.metric("Live Data Points", len(recent_buf))
+    st.sidebar.metric("Last Update", time.strftime("%H:%M:%S", time.localtime()))
 
 if __name__ == "__main__":
     main()
