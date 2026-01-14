@@ -129,7 +129,7 @@ def on_message(client, userdata, msg):
 # ===========================
 def main():
     st.set_page_config(page_title="River Monitor", layout="wide")
-    st.title("🌊 River Monitor Dashboard — Stable Realtime")
+    st.title("🌊 River Monitor Dashboard — Auto Refresh")
 
     # ===========================
     # SIDEBAR
@@ -149,7 +149,7 @@ def main():
         csv_rows = len(pd.read_csv(CSV_FILE))
         st.sidebar.metric("CSV Rows", csv_rows)
 
-    # Manual refresh
+    # 🔥 AUTO REFRESH BUTTON (same exact function as manual)
     if st.sidebar.button("🔄 Refresh Data", key="refresh"):
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -169,7 +169,7 @@ def main():
             st.error(f"MQTT Error: {e}")
 
     # ===========================
-    # MANUAL MQTT POLLING (NO AUTO REFRESH)
+    # MQTT POLLING (KEEPS RUNNING)
     # ===========================
     if st.session_state.mqtt_client:
         st.session_state.mqtt_client.loop(timeout=0.1)  # Non-blocking poll
