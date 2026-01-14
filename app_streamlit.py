@@ -88,15 +88,27 @@ def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe(MQTT_MODEL_TOPIC)
 
 def on_message(client, userdata, msg):
-    if msg.topic == MQTT_MODEL_TOPIC:
-        payload = json.loads(msg.payload.decode())
-        model_b64 = payload.get("model_b64")
-        if model_b64:
-            with open(MODEL_FILE, "wb") as f:
-                f.write(base64.b64decode(model_b64))
-            st.cache_resource.clear()
-    else:
-        data = json.loads(msg.payload.decode())
+    try:
+        payload_str = msg.payload.decode("utf-8").strip()
+
+        # 🚨 Ignore empty payloads
+        if not payload_str:
+            return
+
+        # 🚨 Must start with JSON object
+        if not payload_str.startswith("{"):
+            return
+
+        data = json.loads(payload_str)
+
+        if msg.topic == MQTT_MODEL_TOPIC:
+            model_b64 = data.get("model_b64")
+            if model_b64:
+                with open(MODEL_FILE, "wb") as f:
+                    f.write(base64.b64decode(model_b64))
+                st.cache_resource.clear()
+            return
+
         row = {
             "timestamp": int(time.time() * 1000),
             "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -104,12 +116,19 @@ def on_message(client, userdata, msg):
             "temperature_c": float(data.get("temperature_c", -1)),
             "humidity_pct": float(data.get("humidity_pct", -1)),
             "danger_level": int(data.get("danger_level", 0)),
-            "rain_level": int(data.get("rain_level", 0))
+            "rain_level": int(data.get("rain_level", 0)),
         }
+
         st.session_state.last_data = row
         st.session_state.logs.append(row)
         st.session_state.logs = st.session_state.logs[-500:]
         append_to_csv(row)
+
+    except json.JSONDecodeError:
+        # ✅ Ignore bad JSON silently
+        return
+    except Exception as e:
+        st.error(f"MQTT error: {e}")
 
 # ===========================
 # MAIN
@@ -157,3 +176,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
