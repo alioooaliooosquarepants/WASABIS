@@ -192,10 +192,6 @@ def main():
 
     with col3:
         status_box("Rain", int(data["rain_level"] > 0), "rain")
-
-    # ---- CHART ----
-    if len(st.session_state.logs) > 1:
-        df = pd.DataFrame(st.session_state.logs)
             # ---- WATER LEVEL LINE CHART ----
     if len(st.session_state.logs) > 1:
         st.subheader("📈 Grafik Ketinggian Air")
@@ -246,6 +242,7 @@ def main():
         """, unsafe_allow_html=True)
 if __name__ == "__main__":
     main()
+
 
 
 
