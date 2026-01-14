@@ -14,22 +14,20 @@ import hmac
 import hashlib
 
 # ===========================
-# CONFIG
+# CONFIG (NO WIDGETS HERE)
 # ===========================
-MODEL_FILE = "decision_tree.pkl"  # Dedicated to Decision Tree model
+MODEL_FILE = "decision_tree.pkl"
 CSV_FILE = "river_data_log.csv"
-REFRESH_INTERVAL = 3  # detik
-LABELS = ["Aman", "Waspada", "Bahaya"]
-STANDARD_WATER_HEIGHT = st.sidebar.number_input("Standard Water Height (cm)", min_value=0.0, max_value=1000.0, value=50.0, step=1.0)
+REFRESH_INTERVAL = 3  # seconds
 RECENT_MAX = 500
+MQTT_MODEL_TOPIC = "river/monitoring/model"
+MQTT_MODEL_SECRET = os.getenv("MQTT_MODEL_SECRET", "")
 
 # ===========================
 # GLOBAL VARIABLES
 # ===========================
 recent_buf = deque(maxlen=RECENT_MAX)
 buf_lock = threading.Lock()
-MQTT_MODEL_TOPIC = "river/monitoring/model"
-MQTT_MODEL_SECRET = os.getenv("MQTT_MODEL_SECRET", "")  # Optional model verification secret
 
 # ===========================
 # HELPERS
@@ -72,35 +70,29 @@ def log_event(event):
 # MQTT CALLBACKS
 # ===========================
 def mqtt_model_callback(client, userdata, message):
-    """Handle model updates from MQTT"""
     try:
-        topic = message.topic
         payload = message.payload.decode()
-        if topic == MQTT_MODEL_TOPIC:
-            meta = json.loads(payload)
-            model_b64 = meta.get("model_b64")
-            if model_b64:
-                # optional verification
-                sig = meta.get("signature")
-                if sig and MQTT_MODEL_SECRET:
-                    calc = hmac.new(MQTT_MODEL_SECRET.encode('utf-8'), model_b64.encode('utf-8'), hashlib.sha256).hexdigest()
-                    if not hmac.compare_digest(calc, sig):
-                        logging.error("Model signature mismatch; ignoring model message")
-                        return
-                model_bytes = base64.b64decode(model_b64.encode('ascii'))
-                with open(MODEL_FILE, 'wb') as mf:
-                    mf.write(model_bytes)
-                # clear cached model so Streamlit reloads
-                try:
-                    st.cache_resource.clear()
-                except Exception:
-                    pass
-                logging.info("Received and saved model from MQTT")
+        meta = json.loads(payload)
+        model_b64 = meta.get("model_b64")
+        if model_b64:
+            sig = meta.get("signature")
+            if sig and MQTT_MODEL_SECRET:
+                calc = hmac.new(MQTT_MODEL_SECRET.encode('utf-8'), model_b64.encode('utf-8'), hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(calc, sig):
+                    logging.error("Model signature mismatch")
+                    return
+            model_bytes = base64.b64decode(model_b64.encode('ascii'))
+            with open(MODEL_FILE, 'wb') as mf:
+                mf.write(model_bytes)
+            try:
+                st.cache_resource.clear()
+            except:
+                pass
+            logging.info("Model updated via MQTT")
     except Exception as e:
-        logging.exception("Failed to handle model message: %s", e)
+        logging.exception("Model MQTT error: %s", e)
 
 def mqtt_data_callback(client, userdata, message):
-    """Handle data updates from MQTT"""
     try:
         payload = json.loads(message.payload.decode())
         row = {
@@ -114,71 +106,67 @@ def mqtt_data_callback(client, userdata, message):
         }
         with buf_lock:
             recent_buf.append(row)
-        log_event(f"MQTT data received: water_level={row['water_level_cm']}")
-    except Exception as e:
-        logging.exception("MQTT data handling error: %s", e)
+    except Exception:
+        pass
 
 # ===========================
 # MAIN FUNCTION
 # ===========================
 def main():
     # ===========================
-    # SIDEBAR CONFIG (must be before st.sidebar calls)
+    # STREAMLIT SETTINGS FIRST
     # ===========================
-    st.sidebar.title("MQTT Configuration")
-    MQTT_BROKER = st.sidebar.text_input("MQTT Broker", value="broker.hivemq.com")
-    MQTT_PORT = st.sidebar.number_input("MQTT Port", value=1883, min_value=1, max_value=65535)
-    MQTT_TOPIC = st.sidebar.text_input("Data Topic", value="river/monitoring/data")
-    
-    st.sidebar.title("Dashboard Settings")
-    STANDARD_WATER_HEIGHT = st.sidebar.number_input("Standard Water Height (cm)", min_value=0.0, max_value=1000.0, value=50.0, step=1.0)
-    
-    # ===========================
-    # DATA LOADING & CLEANING
-    # ===========================
-    @st.cache_data(ttl=REFRESH_INTERVAL)
-    def load_data():
-        with buf_lock:
-            df = pd.DataFrame(list(recent_buf))
-        # if empty, optionally fall back to reading CSV once
-        if df.empty and os.path.exists(CSV_FILE):
-            df = pd.read_csv(CSV_FILE).sort_values("timestamp").tail(RECENT_MAX)
-        # Range check & noise filter
-        if not df.empty:
-            df = df[(df["water_level_cm"].between(0, 1000)) &
-                    (df["temperature_c"].between(-10, 80)) &
-                    (df["humidity_pct"].between(0, 100))]
-            df = df.fillna(method="ffill").fillna(method="bfill")  # handle missing data
-            # Normalization
-            df["water_level_norm"] = df["water_level_cm"] / STANDARD_WATER_HEIGHT
-            # Water rise rate
-            df["water_rise_rate"] = df["water_level_cm"].diff().fillna(0)
-            # Rain binary
-            df["rain"] = (df["rain_level"] > 0).astype(int)
-        return df
+    st.set_page_config(page_title="River Monitor Dashboard", layout="wide")
+    st.title("🌊 River Monitoring Dashboard — Real-Time + ML")
 
-    @st.cache_resource
-    def load_model():
-        try:
-            model = pickle.load(open(MODEL_FILE, "rb"))
-            return model
-        except Exception:
-            return None
+    # Background styling
+    st.markdown("""
+    <style>
+    body { background-color: #e0f7fa; }
+    </style>
+    """, unsafe_allow_html=True)
 
     # ===========================
-    # MQTT CLIENT SETUP
+    # SIDEBAR - ALL WIDGETS HERE
+    # ===========================
+    st.sidebar.title("⚙️ Configuration")
+    
+    # MQTT Settings
+    mqtt_broker = st.sidebar.text_input("MQTT Broker", value="broker.hivemq.com", key="mqtt_broker")
+    mqtt_port = st.sidebar.number_input("MQTT Port", value=1883, min_value=1, max_value=65535, key="mqtt_port")
+    mqtt_data_topic = st.sidebar.text_input("Data Topic", value="river/monitoring/data", key="mqtt_data_topic")
+    
+    # Dashboard Settings  
+    standard_water_height = st.sidebar.number_input(
+        "Standard Water Height (cm)", 
+        min_value=0.0, max_value=1000.0, 
+        value=50.0, step=1.0, 
+        key="standard_height"
+    )
+    
+    # Manual Override
+    st.sidebar.subheader("🔧 Manual Override")
+    manual_water = st.sidebar.number_input("Water Level (cm)", min_value=0.0, max_value=1000.0, value=None, key="manual_water")
+    manual_temp = st.sidebar.number_input("Temperature (°C)", min_value=-10.0, max_value=80.0, value=None, key="manual_temp")
+    manual_humidity = st.sidebar.number_input("Humidity (%)", min_value=0.0, max_value=100.0, value=None, key="manual_humidity")
+    manual_rain = st.sidebar.selectbox("Rain", [None, 0, 1], key="manual_rain")
+    manual_danger = st.sidebar.selectbox("Danger Override", [None, "Aman", "Waspada", "Bahaya"], key="manual_danger")
+    apply_manual = st.sidebar.button("Apply Override", key="apply_manual")
+    
+    refresh_btn = st.sidebar.button("🔄 Refresh Data", key="refresh")
+
+    # ===========================
+    # MQTT SETUP
     # ===========================
     @st.cache_resource
-    def start_mqtt_client(broker, port, data_topic, model_topic):
-        def _ensure_csv_header():
+    def init_mqtt(broker, port, data_topic, model_topic):
+        def ensure_csv():
             if not os.path.exists(CSV_FILE):
-                df_init = pd.DataFrame(columns=[
-                    "timestamp", "datetime", "water_level_cm",
-                    "temperature_c", "humidity_pct", "danger_level", "rain_level"
-                ])
-                df_init.to_csv(CSV_FILE, index=False)
-
-        _ensure_csv_header()
+                cols = ["timestamp", "datetime", "water_level_cm", "temperature_c", 
+                       "humidity_pct", "danger_level", "rain_level"]
+                pd.DataFrame(columns=cols).to_csv(CSV_FILE, index=False)
+        
+        ensure_csv()
         client = mqtt.Client()
         client.on_message = lambda c,u,m: (
             mqtt_model_callback(c,u,m) if m.topic == model_topic else mqtt_data_callback(c,u,m)
@@ -188,160 +176,143 @@ def main():
             client.subscribe(data_topic)
             client.subscribe(model_topic)
             client.loop_start()
-            logging.info(f"MQTT client started: {broker}:{port}")
+            st.sidebar.success("✅ MQTT Connected")
+            return client
         except Exception as e:
-            logging.exception("Failed to start MQTT client: %s", e)
-        return client
+            st.sidebar.error(f"❌ MQTT Error: {e}")
+            return None
 
-    # Start MQTT client
-    mqtt_client = start_mqtt_client(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC, MQTT_MODEL_TOPIC)
+    mqtt_client = init_mqtt(mqtt_broker, mqtt_port, mqtt_data_topic, MQTT_MODEL_TOPIC)
 
     # ===========================
-    # STREAMLIT SETTINGS
+    # DATA LOADING
     # ===========================
-    st.set_page_config(page_title="River Monitor + MQTT + ML", layout="wide")
-    st.title("🌊 River Monitoring Dashboard — Real-Time + Prediction")
+    @st.cache_data(ttl=REFRESH_INTERVAL)
+    def load_data(std_height):
+        with buf_lock:
+            df = pd.DataFrame(list(recent_buf))
+        
+        if df.empty and os.path.exists(CSV_FILE):
+            df = pd.read_csv(CSV_FILE).tail(RECENT_MAX)
+        
+        if not df.empty:
+            # Data validation
+            df = df[(df["water_level_cm"].between(0, 1000)) &
+                   (df["temperature_c"].between(-10, 80)) &
+                   (df["humidity_pct"].between(0, 100))]
+            
+            # Fill missing data
+            df = df.fillna(method="ffill").fillna(method="bfill")
+            
+            # Feature engineering
+            df["water_level_norm"] = df["water_level_cm"] / std_height
+            df["water_rise_rate"] = df["water_level_cm"].diff().fillna(0)
+            df["rain"] = (df["rain_level"] > 0).astype(int)
+            
+        return df
 
-    # Blue-ish background
-    st.markdown("""
-    <style>
-    body {
-        background-color: #e0f7fa;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # ========== SIDEBAR ==========
-    st.sidebar.title("Pengaturan")
-    refresh = st.sidebar.button("Refresh Sekarang")
-
-    # Manual Override Section
-    st.sidebar.subheader("Manual Override")
-    manual_water_level = st.sidebar.number_input("Manual Water Level (cm)", min_value=0.0, max_value=1000.0, value=None, step=1.0)
-    manual_temp = st.sidebar.number_input("Manual Temperature (°C)", min_value=-10.0, max_value=80.0, value=None, step=0.1)
-    manual_humidity = st.sidebar.number_input("Manual Humidity (%)", min_value=0.0, max_value=100.0, value=None, step=0.1)
-    manual_rain = st.sidebar.selectbox("Manual Rain", [None, 0, 1])
-    manual_danger = st.sidebar.selectbox("Manual Danger Override", [None, "Aman", "Waspada", "Bahaya"])
-    submit_manual = st.sidebar.button("Apply Manual Override")
-
-    # ========== MAIN CONTENT ==========
-    df = load_data()
-
-    if refresh:
+    # Load data
+    if refresh_btn:
         st.cache_data.clear()
-        st.cache_resource.clear()
-        df = load_data()
-        log_event("Data refreshed manually")
-
-    log_event(f"Dashboard accessed, data points: {len(df)}")
-
+    
+    df = load_data(standard_water_height)
+    
     if df.empty:
-        st.info("⏳ Waiting for MQTT data or CSV file...")
+        st.info("⏳ Waiting for data... Check MQTT connection and topics.")
         st.stop()
 
-    # Use last row for current status
+    # ===========================
+    # CURRENT STATUS
+    # ===========================
     last = df.iloc[-1]
     water = last["water_level_cm"]
     rain = last["rain"]
     danger = last.get("danger_level", 0)
-    hum = last["humidity_pct"]
 
-    # ===========================
-    # DISPLAY UI
-    # ===========================
+    # Status cards
     col1, col2, col3 = st.columns(3)
-
     with col1:
         st.metric("Water Level", f"{water:.1f} cm")
     with col2:
-        status_box("Danger Level", int(danger), mode="danger")
+        status_box("Danger Level", int(danger), "danger")
     with col3:
-        status_box("Rain Status", int(rain), mode="rain")
+        status_box("Rain", int(rain), "rain")
 
-    # Charts
+    # ===========================
+    # CHARTS
+    # ===========================
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("📈 Water Level Trend")
-        st.line_chart(df.set_index("datetime")["water_level_cm"])
+        st.subheader("📈 Water Level")
+        st.line_chart(df.set_index(df["datetime"] if "datetime" in df else range(len(df)))["water_level_cm"])
+    
     with col2:
-        st.subheader("🌡️ Temperature & Humidity")
-        st.line_chart(df.set_index("datetime")[["temperature_c", "humidity_pct"]])
+        st.subheader("🌡️ Environment")
+        env_data = pd.DataFrame({
+            "Temp": df["temperature_c"],
+            "Humidity": df["humidity_pct"]
+        })
+        st.line_chart(env_data)
 
-    # ========== PREDICTION ==========
-    fitur = ["water_level_norm", "water_rise_rate", "rain", "humidity_pct"]
+    # ===========================
+    # ML PREDICTION
+    # ===========================
+    @st.cache_resource
+    def load_model():
+        try:
+            return pickle.load(open(MODEL_FILE, "rb"))
+        except:
+            return None
+
     model = load_model()
-
-    if model is not None and not df.empty:
-        st.subheader("🤖 ML Prediction (Decision Tree)")
+    features = ["water_level_norm", "water_rise_rate", "rain", "humidity_pct"]
+    
+    if model and not df.empty:
+        st.subheader("🤖 ML Prediction")
         
-        latest = df[fitur].tail(1).copy()
+        latest = df[features].iloc[-1:].copy()
         
-        # Apply manual overrides
-        pred = None
-        confidence = None
-        if submit_manual and any([manual_water_level is not None, manual_temp is not None, 
-                                manual_humidity is not None, manual_rain is not None, manual_danger is not None]):
-            if manual_water_level is not None:
-                latest["water_level_norm"] = manual_water_level / STANDARD_WATER_HEIGHT
+        # Manual override
+        if apply_manual:
+            if manual_water is not None:
+                latest["water_level_norm"] = manual_water / standard_water_height
             if manual_rain is not None:
                 latest["rain"] = manual_rain
             if manual_humidity is not None:
                 latest["humidity_pct"] = manual_humidity
-            
-            if manual_danger is not None:
-                pred = manual_danger
-                st.success("✅ Manual override applied")
-            else:
-                # Predict with modified data
-                if hasattr(model, "predict_proba"):
-                    proba = model.predict_proba(latest)
-                    confidence = np.max(proba)
-                    pred = model.predict(latest)[0]
-                else:
-                    pred = model.predict(latest)[0]
-        else:
-            # Normal prediction
-            if hasattr(model, "predict_proba"):
+        
+        try:
+            if hasattr(model, 'predict_proba'):
                 proba = model.predict_proba(latest)
                 confidence = np.max(proba)
-                pred = model.predict(latest)[0]
+                prediction = model.predict(latest)[0]
             else:
-                pred = model.predict(latest)[0]
-
-        # Display prediction
-        temp_for_pred = manual_temp if manual_temp is not None else df["temperature_c"].iloc[-1]
-        label = pred
-        emoji = normalize_emoji(label)
-
-        # Prediction horizon
-        rise_rate = last["water_rise_rate"]
-        current_level = water
-        bahaya_threshold = 35.0
-        if rise_rate > 0 and current_level < bahaya_threshold:
-            minutes_ahead = ((bahaya_threshold - current_level) / rise_rate) * 60
-            st.info(f"⏰ **Prediction Horizon:** {minutes_ahead:.1f} minutes to potential danger level")
-        else:
-            st.info("✅ Current trends stable or insufficient data for horizon prediction")
-
-        # Hybrid alerts
-        if temp_for_pred > 70:
-            st.error("🚨 ALARM: Extreme temperature detected!")
-            log_event("Force alarm - high temperature")
-        elif pred == "Bahaya" and (confidence is None or confidence > 0.8):
-            st.error(f"🚨 ALERT: River Status **{pred}** (confidence: {confidence:.1%})")
-            log_event(f"ML ALERT: {pred} (confidence: {confidence})")
-        else:
-            st.markdown(f"""
+                prediction = model.predict(latest)[0]
+                confidence = None
+            
+            # Display
+            emoji = normalize_emoji(prediction)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"""
                 <div style="padding:25px; border-radius:15px; background:#0277bd; color:white; text-align:center;">
-                    <h2>Current Prediction:</h2>
+                    <h2>Prediction</h2>
                     <h1 style="font-size:60px;">{emoji}</h1>
-                    <h1>{label}</h1>
-                    {f'<p><strong>Confidence:</strong> {confidence:.1%}</p>' if confidence else '<p>No confidence score</p>'}
+                    <h2>{prediction}</h2>
+                    {f'<p>Confidence: {confidence:.1%}</p>' if confidence else ''}
                 </div>
-            """, unsafe_allow_html=True)
-            log_event(f"Prediction: {pred} (confidence: {confidence})")
+                """, unsafe_allow_html=True)
+            
+            # Risk horizon
+            rise_rate = df["water_rise_rate"].iloc[-1]
+            if rise_rate > 0:
+                time_to_danger = (35 - water) / rise_rate * 60  # minutes
+                st.info(f"⏰ Estimated {time_to_danger:.0f} min to danger level")
+                
+        except Exception as e:
+            st.error(f"Prediction error: {e}")
     else:
-        st.warning("⚠️ Model file not found or data unavailable. Place 'decision_tree.pkl' in the same directory.")
+        st.warning("⚠️ No ML model found. Place 'decision_tree.pkl' in app directory.")
 
 if __name__ == "__main__":
     main()
