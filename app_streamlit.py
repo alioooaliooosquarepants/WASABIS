@@ -59,7 +59,6 @@ def status_box(title, level, mode="danger"):
             <h3 style="color:white;">{text}</h3>
         </div>
     """, unsafe_allow_html=True)
-
 def ensure_csv_header():
     if not os.path.exists(CSV_FILE):
         df_init = pd.DataFrame(columns=[
@@ -272,3 +271,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
