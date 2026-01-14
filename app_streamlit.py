@@ -21,7 +21,7 @@ MQTT_MODEL_TOPIC = "river/monitoring/model"
 MQTT_MODEL_SECRET = os.getenv("MQTT_MODEL_SECRET", "")
 
 # ===========================
-# SESSION STATE (STABLE REALTIME)
+# SESSION STATE
 # ===========================
 if "connected" not in st.session_state:
     st.session_state.connected = False
@@ -74,6 +74,20 @@ def append_to_csv(row):
     except:
         return False
 
+# 🔥 FIXED: READ LATEST CSV + SESSION STATE SYNC
+@st.cache_data(ttl=2)  # Refresh every 2s
+def get_latest_csv():
+    """ALWAYS get latest CSV row"""
+    if not os.path.exists(CSV_FILE):
+        return None
+    try:
+        df_csv = pd.read_csv(CSV_FILE)
+        if df_csv.empty:
+            return None
+        return df_csv.iloc[-1].to_dict()
+    except:
+        return None
+
 # ===========================
 # MQTT CALLBACKS
 # ===========================
@@ -98,7 +112,6 @@ def on_message(client, userdata, msg):
                     f.write(model_bytes)
                 st.cache_resource.clear()
         else:
-            # REALTIME DATA
             data = json.loads(msg.payload.decode())
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
@@ -112,13 +125,11 @@ def on_message(client, userdata, msg):
                 "rain_level": int(data.get("rain_level", 0))
             }
             
+            # 🔥 BOTH: Update session + CSV
             st.session_state.last_data = row
             st.session_state.logs.append(row)
-            
-            # Keep only 500 latest
             if len(st.session_state.logs) > 500:
                 st.session_state.logs = st.session_state.logs[-500:]
-            
             append_to_csv(row)
             
     except Exception as e:
@@ -129,7 +140,7 @@ def on_message(client, userdata, msg):
 # ===========================
 def main():
     st.set_page_config(page_title="River Monitor", layout="wide")
-    st.title("🌊 River Monitor Dashboard — Auto Refresh")
+    st.title("🌊 River Monitor Dashboard — LIVE CSV SYNC")
 
     # ===========================
     # SIDEBAR
@@ -141,22 +152,22 @@ def main():
     
     standard_height = st.sidebar.number_input("Std Height (cm)", 0.0, 1000.0, 50.0, key="std_h")
     
-    # Status
     st.sidebar.metric("MQTT", "🟢 ON" if st.session_state.connected else "🔴 OFF")
-    st.sidebar.metric("Data Points", len(st.session_state.logs))
     
-    if os.path.exists(CSV_FILE):
-        csv_rows = len(pd.read_csv(CSV_FILE))
-        st.sidebar.metric("CSV Rows", csv_rows)
-
-    # 🔥 AUTO REFRESH BUTTON (same exact function as manual)
+    # 🔥 SHOW BOTH COUNTS
+    session_count = len(st.session_state.logs)
+    csv_count = len(pd.read_csv(CSV_FILE)) if os.path.exists(CSV_FILE) else 0
+    st.sidebar.metric("Session Data", session_count)
+    st.sidebar.metric("CSV Rows", csv_count)
+    
+    # Manual refresh button (same function)
     if st.sidebar.button("🔄 Refresh Data", key="refresh"):
         st.cache_data.clear()
         st.cache_resource.clear()
         st.rerun()
 
     # ===========================
-    # MQTT CLIENT SETUP
+    # MQTT SETUP
     # ===========================
     if st.session_state.mqtt_client is None:
         try:
@@ -169,25 +180,34 @@ def main():
             st.error(f"MQTT Error: {e}")
 
     # ===========================
-    # MQTT POLLING (KEEPS RUNNING)
+    # 🔥 MQTT POLLING + FORCE CSV SYNC
     # ===========================
     if st.session_state.mqtt_client:
-        st.session_state.mqtt_client.loop(timeout=0.1)  # Non-blocking poll
+        st.session_state.mqtt_client.loop(timeout=0.1)
+        
+        # 🔥 FORCE SYNC: Read latest CSV every run
+        csv_latest = get_latest_csv()
+        if csv_latest and (not st.session_state.last_data or 
+                          csv_latest["timestamp"] > st.session_state.last_data.get("timestamp", 0)):
+            st.session_state.last_data = csv_latest
+            st.info(f"🔄 **SYNCED** latest CSV: {csv_latest['water_level_cm']:.1f}cm")
 
     # ===========================
-    # MAIN DISPLAY
+    # MAIN DISPLAY - PRIORITY: CSV LATEST
     # ===========================
-    if not st.session_state.logs:
+    csv_latest = get_latest_csv()  # Always fresh!
+    
+    if not st.session_state.logs and not csv_latest:
         st.info("⏳ **Waiting for data...**")
         st.info("**Test:** `mosquitto_pub -h broker.hivemq.com -t \"river/monitoring/data\" -m '{\"water_level_cm\":25.5}'`")
         return
 
-    # Current status
-    latest = st.session_state.last_data
-    if latest:
-        water = latest["water_level_cm"]
-        rain = latest["rain_level"]
-        danger = latest.get("danger_level", 0)
+    # 🔥 SHOW LATEST (CSV > Session)
+    display_data = csv_latest if csv_latest else st.session_state.last_data
+    if display_data:
+        water = display_data["water_level_cm"]
+        rain = display_data["rain_level"]
+        danger = display_data.get("danger_level", 0)
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -196,16 +216,18 @@ def main():
             status_box("Danger", int(danger), "danger")
         with col3:
             status_box("Rain", int(rain > 0), "rain")
+        
+        st.success(f"✅ **LIVE**: {water:.1f}cm | CSV: {csv_count} rows")
 
-    # Charts
-    df = pd.DataFrame(st.session_state.logs)
-    if len(df) >= 2:
+    # Charts (session data)
+    if len(st.session_state.logs) >= 2:
+        df = pd.DataFrame(st.session_state.logs)
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("📈 Water Level")
             st.line_chart(df.set_index("datetime")["water_level_cm"], use_container_width=True)
         with col2:
-            st.subheader("🌡️ Environment") 
+            st.subheader("🌡️ Environment")
             env_df = df.set_index("datetime")[["temperature_c", "humidity_pct"]]
             st.line_chart(env_df, use_container_width=True)
 
@@ -218,10 +240,10 @@ def main():
             return None
 
     model = load_model()
-    if model and st.session_state.last_data:
+    if model and display_data:
         st.subheader("🤖 Prediction")
         try:
-            latest_df = pd.DataFrame([st.session_state.last_data])
+            latest_df = pd.DataFrame([display_data])
             latest_df["water_level_norm"] = latest_df["water_level_cm"] / standard_height
             latest_df["rain"] = (latest_df["rain_level"] > 0).astype(int)
             
