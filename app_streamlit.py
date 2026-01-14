@@ -148,7 +148,7 @@ def load_model():
 def main():
     st.set_page_config(page_title="River Monitor", layout="wide")
 
-    # ✅ AUTOMATIC REFRESH EVERY 4 SECONDS
+    # Auto refresh
     st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="river_refresh")
 
     st.title("🌊 River Monitor Dashboard")
@@ -172,11 +172,13 @@ def main():
     if st.session_state.mqtt_client:
         st.session_state.mqtt_client.loop(timeout=0.1)
 
-           data = get_latest_csv() or st.session_state.last_data
+    # ---- DATA LOAD (NO EXTRA INDENT) ----
+    data = get_latest_csv() or st.session_state.last_data
     if not data:
         st.info("Waiting for data...")
         return
 
+    # ---- WATER LEVEL HEADER ----
     st.subheader("💧 Water Level")
 
     col1, col2, col3 = st.columns(3)
@@ -193,58 +195,52 @@ def main():
     with col3:
         status_box("Rain", int(data["rain_level"] > 0), "rain")
 
+    # ---- CHART ----
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
         st.line_chart(df.set_index("datetime")["water_level_cm"])
-       # ===========================
-    # 🤖 AI FLOOD PREDICTION (ORDER-SAFE)
-    # ===========================
-    model = load_model()
 
-    if model and data:
+    # ---- AI PREDICTION ----
+    model = load_model()
+    if model:
         st.subheader("🤖 AI Flood Prediction")
 
-        try:
-            # ---- compute features ----
-            if len(st.session_state.logs) >= 2:
-                prev = st.session_state.logs[-2]["water_level_cm"]
-                curr = st.session_state.logs[-1]["water_level_cm"]
-                water_rise_rate = curr - prev
-            else:
-                water_rise_rate = 0.0
+        if len(st.session_state.logs) >= 2:
+            prev = st.session_state.logs[-2]["water_level_cm"]
+            curr = st.session_state.logs[-1]["water_level_cm"]
+            water_rise_rate = curr - prev
+        else:
+            water_rise_rate = 0.0
 
-            features = {
-                "water_level_norm": (
-                    data["water_level_cm"] / standard_height
-                    if standard_height > 0 else 0.0
-                ),
-                "rain": int(data["rain_level"] > 0),
-                "water_rise_rate": water_rise_rate,
-                "humidity_pct": float(data["humidity_pct"]),
-            }
+        features = {
+            "water_level_norm": (
+                data["water_level_cm"] / standard_height
+                if standard_height > 0 else 0.0
+            ),
+            "rain": int(data["rain_level"] > 0),
+            "water_rise_rate": water_rise_rate,
+            "humidity_pct": float(data["humidity_pct"]),
+        }
 
-            # ---- FORCE TRAINING ORDER ----
-            X = pd.DataFrame(
-                [[features[name] for name in model.feature_names_in_]],
-                columns=model.feature_names_in_
-            )
+        X = pd.DataFrame(
+            [[features[name] for name in model.feature_names_in_]],
+            columns=model.feature_names_in_
+        )
 
-            pred = model.predict(X)[0]
-            emoji = normalize_emoji(pred)
+        pred = model.predict(X)[0]
+        emoji = normalize_emoji(pred)
 
-            st.markdown(f"""
-            <div style="padding:30px; border-radius:20px;
-                        background:#01579b; color:white;
-                        text-align:center;">
-                <h1 style="font-size:70px;">{emoji}</h1>
-                <h2>{pred}</h2>
-            </div>
-            """, unsafe_allow_html=True)
-
-        except Exception as e:
-            st.warning(f"Prediction error: {e}")
+        st.markdown(f"""
+        <div style="padding:30px; border-radius:20px;
+                    background:#01579b; color:white;
+                    text-align:center;">
+            <h1 style="font-size:70px;">{emoji}</h1>
+            <h2>{pred}</h2>
+        </div>
+        """, unsafe_allow_html=True)
 if __name__ == "__main__":
     main()
+
 
 
 
