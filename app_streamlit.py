@@ -177,10 +177,19 @@ def main():
         st.info("Waiting for data...")
         return
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Water Level", f"{data['water_level_cm']:.1f} cm")
-    with col2: status_box("Danger", data["danger_level"])
-    with col3: status_box("Rain", int(data["rain_level"] > 0), "rain")
+    st.subheader("💧 Water Level Status")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown("### 🌊 Water Level")
+    st.metric("", f"{data['water_level_cm']:.1f} cm")
+
+with col2:
+    status_box("Danger", data["danger_level"])
+
+with col3:
+    status_box("Rain", int(data["rain_level"] > 0), "rain")
 
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
@@ -234,3 +243,4 @@ def main():
             st.warning(f"Prediction error: {e}")
 if __name__ == "__main__":
     main()
+
