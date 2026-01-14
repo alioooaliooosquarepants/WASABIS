@@ -179,8 +179,6 @@ def main():
         return
 
     # ---- WATER LEVEL HEADER ----
-    st.subheader("💧 Water Level")
-
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -198,6 +196,14 @@ def main():
     # ---- CHART ----
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
+            # ---- WATER LEVEL LINE CHART ----
+    if len(st.session_state.logs) > 1:
+        st.subheader("📈 Grafik Ketinggian Air")
+
+        df = pd.DataFrame(st.session_state.logs)
+        st.line_chart(
+            df.set_index("datetime")["water_level_cm"]
+        )
         st.line_chart(df.set_index("datetime")["water_level_cm"])
 
     # ---- AI PREDICTION ----
@@ -240,6 +246,7 @@ def main():
         """, unsafe_allow_html=True)
 if __name__ == "__main__":
     main()
+
 
 
 
