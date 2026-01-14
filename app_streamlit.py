@@ -192,7 +192,7 @@ def main():
 
     with col3:
         status_box("Rain", int(data["rain_level"] > 0), "rain")
-            # ---- WATER LEVEL LINE CHART ----
+      # ---- WATER LEVEL LINE CHART ----
     if len(st.session_state.logs) > 1:
         st.subheader("📈 Grafik Ketinggian Air")
 
@@ -200,9 +200,7 @@ def main():
         st.line_chart(
             df.set_index("datetime")["water_level_cm"]
         )
-        st.line_chart(df.set_index("datetime")["water_level_cm"])
 
-    # ---- AI PREDICTION ----
     model = load_model()
     if model:
         st.subheader("🤖 AI Flood Prediction")
@@ -242,6 +240,7 @@ def main():
         """, unsafe_allow_html=True)
 if __name__ == "__main__":
     main()
+
 
 
 
