@@ -185,46 +185,48 @@ def main():
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
         st.line_chart(df.set_index("datetime")["water_level_cm"])
-# ===========================
-# 🤖 AI PREDICTION (FIXED)
-# ===========================
-model = load_model()
-if model and data:
-    st.subheader("🤖 AI Flood Prediction")
+    # ===========================
+    # 🤖 AI PREDICTION (FIXED)
+    # ===========================
+    model = load_model()
 
-    try:
-        # ---- build feature dataframe EXPLICITLY ----
-        if len(st.session_state.logs) >= 2:
-            prev = st.session_state.logs[-2]["water_level_cm"]
-            curr = st.session_state.logs[-1]["water_level_cm"]
-            water_rise_rate = curr - prev
-        else:
-            water_rise_rate = 0.0
+    if model and data:
+        st.subheader("🤖 AI Flood Prediction")
 
-        X = pd.DataFrame([{
-            "water_level_norm": (
-                data["water_level_cm"] / standard_height
-                if standard_height > 0 else 0.0
-            ),
-            "rain": int(data["rain_level"] > 0),
-            "water_rise_rate": water_rise_rate
-        }])
+        try:
+            # ---- water rise rate ----
+            if len(st.session_state.logs) >= 2:
+                prev = st.session_state.logs[-2]["water_level_cm"]
+                curr = st.session_state.logs[-1]["water_level_cm"]
+                water_rise_rate = curr - prev
+            else:
+                water_rise_rate = 0.0
 
-        # ---- prediction ----
-        pred = model.predict(X)[0]
-        emoji = normalize_emoji(pred)
+            # ---- EXACT training features ----
+            X = pd.DataFrame([{
+                "water_level_norm": (
+                    data["water_level_cm"] / standard_height
+                    if standard_height > 0 else 0.0
+                ),
+                "rain": int(data["rain_level"] > 0),
+                "water_rise_rate": water_rise_rate
+            }])
 
-        st.markdown(f"""
-        <div style="padding:30px; border-radius:20px;
-                    background:#01579b; color:white;
-                    text-align:center;">
-            <h1 style="font-size:70px;">{emoji}</h1>
-            <h2>{pred}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+            pred = model.predict(X)[0]
+            emoji = normalize_emoji(pred)
 
-    except Exception as e:
-        st.warning(f"Prediction error: {e}")
+            st.markdown(f"""
+            <div style="padding:30px; border-radius:20px;
+                        background:#01579b; color:white;
+                        text-align:center;">
+                <h1 style="font-size:70px;">{emoji}</h1>
+                <h2>{pred}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+
+        except Exception as e:
+            st.warning(f"Prediction error: {e}")
 if __name__ == "__main__":
     main()
+
 
