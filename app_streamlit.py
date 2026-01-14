@@ -19,6 +19,7 @@ MODEL_FILE = "decision_tree.pkl"
 CSV_FILE = "river_data_log.csv"
 MQTT_MODEL_TOPIC = "river/monitoring/model"
 MQTT_MODEL_SECRET = os.getenv("MQTT_MODEL_SECRET", "")
+REFRESH_INTERVAL = 4  # Every 4 seconds
 
 # ===========================
 # SESSION STATE
@@ -31,6 +32,8 @@ if "last_data" not in st.session_state:
     st.session_state.last_data = None
 if "mqtt_client" not in st.session_state:
     st.session_state.mqtt_client = None
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = 0
 
 # ===========================
 # HELPERS
@@ -74,10 +77,8 @@ def append_to_csv(row):
     except:
         return False
 
-# 🔥 FIXED: READ LATEST CSV + SESSION STATE SYNC
-@st.cache_data(ttl=2)  # Refresh every 2s
+@st.cache_data(ttl=2)
 def get_latest_csv():
-    """ALWAYS get latest CSV row"""
     if not os.path.exists(CSV_FILE):
         return None
     try:
@@ -125,7 +126,6 @@ def on_message(client, userdata, msg):
                 "rain_level": int(data.get("rain_level", 0))
             }
             
-            # 🔥 BOTH: Update session + CSV
             st.session_state.last_data = row
             st.session_state.logs.append(row)
             if len(st.session_state.logs) > 500:
@@ -140,7 +140,7 @@ def on_message(client, userdata, msg):
 # ===========================
 def main():
     st.set_page_config(page_title="River Monitor", layout="wide")
-    st.title("🌊 River Monitor Dashboard — LIVE CSV SYNC")
+    st.title("🌊 River Monitor Dashboard — 🔄 4s Auto Refresh")
 
     # ===========================
     # SIDEBAR
@@ -154,16 +154,25 @@ def main():
     
     st.sidebar.metric("MQTT", "🟢 ON" if st.session_state.connected else "🔴 OFF")
     
-    # 🔥 SHOW BOTH COUNTS
     session_count = len(st.session_state.logs)
     csv_count = len(pd.read_csv(CSV_FILE)) if os.path.exists(CSV_FILE) else 0
     st.sidebar.metric("Session Data", session_count)
     st.sidebar.metric("CSV Rows", csv_count)
     
-    # Manual refresh button (same function)
-    if st.sidebar.button("🔄 Refresh Data", key="refresh"):
+    # 🔥 AUTO REFRESH - EXACT SAME AS MANUAL BUTTON
+    current_time = time.time()
+    if current_time - st.session_state.last_refresh >= REFRESH_INTERVAL:
+        # SAME EXACT FUNCTION AS MANUAL BUTTON
         st.cache_data.clear()
         st.cache_resource.clear()
+        st.session_state.last_refresh = current_time
+        st.rerun()
+
+    # Manual override (still available)
+    if st.sidebar.button("🔄 Force Refresh", key="manual_refresh"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.session_state.last_refresh = time.time()
         st.rerun()
 
     # ===========================
@@ -180,29 +189,26 @@ def main():
             st.error(f"MQTT Error: {e}")
 
     # ===========================
-    # 🔥 MQTT POLLING + FORCE CSV SYNC
+    # MQTT POLLING
     # ===========================
     if st.session_state.mqtt_client:
         st.session_state.mqtt_client.loop(timeout=0.1)
         
-        # 🔥 FORCE SYNC: Read latest CSV every run
         csv_latest = get_latest_csv()
         if csv_latest and (not st.session_state.last_data or 
                           csv_latest["timestamp"] > st.session_state.last_data.get("timestamp", 0)):
             st.session_state.last_data = csv_latest
-            st.info(f"🔄 **SYNCED** latest CSV: {csv_latest['water_level_cm']:.1f}cm")
 
     # ===========================
-    # MAIN DISPLAY - PRIORITY: CSV LATEST
+    # MAIN DISPLAY
     # ===========================
-    csv_latest = get_latest_csv()  # Always fresh!
+    csv_latest = get_latest_csv()
     
     if not st.session_state.logs and not csv_latest:
         st.info("⏳ **Waiting for data...**")
         st.info("**Test:** `mosquitto_pub -h broker.hivemq.com -t \"river/monitoring/data\" -m '{\"water_level_cm\":25.5}'`")
         return
 
-    # 🔥 SHOW LATEST (CSV > Session)
     display_data = csv_latest if csv_latest else st.session_state.last_data
     if display_data:
         water = display_data["water_level_cm"]
@@ -217,9 +223,9 @@ def main():
         with col3:
             status_box("Rain", int(rain > 0), "rain")
         
-        st.success(f"✅ **LIVE**: {water:.1f}cm | CSV: {csv_count} rows")
+        st.success(f"✅ **LIVE**: {water:.1f}cm | CSV: {csv_count} rows | Next refresh: {REFRESH_INTERVAL}s")
 
-    # Charts (session data)
+    # Charts
     if len(st.session_state.logs) >= 2:
         df = pd.DataFrame(st.session_state.logs)
         col1, col2 = st.columns(2)
