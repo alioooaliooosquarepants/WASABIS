@@ -21,7 +21,7 @@ MQTT_MODEL_TOPIC = "river/monitoring/model"
 MQTT_MODEL_SECRET = os.getenv("MQTT_MODEL_SECRET", "")
 
 # ===========================
-# 🔥 SESSION STATE INIT (STABLE REALTIME)
+# SESSION STATE (STABLE REALTIME)
 # ===========================
 if "connected" not in st.session_state:
     st.session_state.connected = False
@@ -31,8 +31,6 @@ if "last_data" not in st.session_state:
     st.session_state.last_data = None
 if "mqtt_client" not in st.session_state:
     st.session_state.mqtt_client = None
-if "refresh_count" not in st.session_state:
-    st.session_state.refresh_count = 0
 
 # ===========================
 # HELPERS
@@ -77,22 +75,21 @@ def append_to_csv(row):
         return False
 
 # ===========================
-# 🔥 MQTT CALLBACKS (SESSION STATE VERSION)
+# MQTT CALLBACKS
 # ===========================
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         st.session_state.connected = True
         client.subscribe("river/monitoring/data")
         client.subscribe(MQTT_MODEL_TOPIC)
-        st.success("✅ MQTT Connected!")
+        st.sidebar.success("✅ MQTT Connected")
     else:
         st.session_state.connected = False
-        st.error("❌ MQTT Connection Failed")
+        st.sidebar.error("❌ MQTT Failed")
 
 def on_message(client, userdata, msg):
     try:
         if msg.topic == MQTT_MODEL_TOPIC:
-            # Handle model updates
             payload = json.loads(msg.payload.decode())
             model_b64 = payload.get("model_b64")
             if model_b64:
@@ -101,7 +98,7 @@ def on_message(client, userdata, msg):
                     f.write(model_bytes)
                 st.cache_resource.clear()
         else:
-            # 🔥 REALTIME DATA HANDLER
+            # REALTIME DATA
             data = json.loads(msg.payload.decode())
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
@@ -115,31 +112,29 @@ def on_message(client, userdata, msg):
                 "rain_level": int(data.get("rain_level", 0))
             }
             
-            # 🔥 UPDATE SESSION STATE (STABLE!)
             st.session_state.last_data = row
             st.session_state.logs.append(row)
             
-            # Limit logs to 500 rows
+            # Keep only 500 latest
             if len(st.session_state.logs) > 500:
                 st.session_state.logs = st.session_state.logs[-500:]
             
-            # Save to CSV
             append_to_csv(row)
             
     except Exception as e:
-        st.error(f"Message parse error: {e}")
+        st.error(f"Parse error: {e}")
 
 # ===========================
-# MAIN APP
+# MAIN
 # ===========================
 def main():
-    st.set_page_config(page_title="River Monitor — RealTime", layout="wide")
-    st.title("🌊 River Monitor Dashboard — 🔥 STABLE REALTIME")
+    st.set_page_config(page_title="River Monitor", layout="wide")
+    st.title("🌊 River Monitor Dashboard — Stable Realtime")
 
     # ===========================
-    # SIDEBAR CONFIG
+    # SIDEBAR
     # ===========================
-    st.sidebar.title("⚙️ MQTT Settings")
+    st.sidebar.title("⚙️ Configuration")
     mqtt_broker = st.sidebar.text_input("Broker", "broker.hivemq.com", key="broker")
     mqtt_port = st.sidebar.number_input("Port", min_value=1, max_value=65535, value=1883, key="port")
     mqtt_topic = st.sidebar.text_input("Topic", "river/monitoring/data", key="topic")
@@ -147,12 +142,21 @@ def main():
     standard_height = st.sidebar.number_input("Std Height (cm)", 0.0, 1000.0, 50.0, key="std_h")
     
     # Status
-    st.sidebar.metric("MQTT Status", "🟢 Connected" if st.session_state.connected else "🔴 Disconnected")
+    st.sidebar.metric("MQTT", "🟢 ON" if st.session_state.connected else "🔴 OFF")
     st.sidebar.metric("Data Points", len(st.session_state.logs))
-    st.sidebar.metric("CSV Rows", len(pd.read_csv(CSV_FILE)) if os.path.exists(CSV_FILE) else 0)
+    
+    if os.path.exists(CSV_FILE):
+        csv_rows = len(pd.read_csv(CSV_FILE))
+        st.sidebar.metric("CSV Rows", csv_rows)
+
+    # Manual refresh
+    if st.sidebar.button("🔄 Refresh Data", key="refresh"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
 
     # ===========================
-    # 🔥 MQTT CLIENT (POLLING - NO THREADS!)
+    # MQTT CLIENT SETUP
     # ===========================
     if st.session_state.mqtt_client is None:
         try:
@@ -161,32 +165,24 @@ def main():
             client.on_message = on_message
             client.connect(mqtt_broker, mqtt_port, 60)
             st.session_state.mqtt_client = client
-            st.session_state.refresh_count = 0
         except Exception as e:
-            st.error(f"MQTT Init Error: {e}")
+            st.error(f"MQTT Error: {e}")
 
     # ===========================
-    # 🔥 REALTIME POLLING (PROVEN METHOD)
+    # MANUAL MQTT POLLING (NO AUTO REFRESH)
     # ===========================
     if st.session_state.mqtt_client:
         st.session_state.mqtt_client.loop(timeout=0.1)  # Non-blocking poll
-        
-        # Auto refresh counter
-        st.session_state.refresh_count += 1
-        st.sidebar.metric("Refresh #", st.session_state.refresh_count)
-        
-        time.sleep(1)  # 1s refresh rate
-        st.rerun()
 
     # ===========================
     # MAIN DISPLAY
     # ===========================
     if not st.session_state.logs:
-        st.info("⏳ **Waiting for MQTT data...**")
-        st.info("**Test command:**\n```bash\nmosquitto_pub -h broker.hivemq.com -t \"river/monitoring/data\" -m '{\"water_level_cm\":25.5,\"temperature_c\":28.3,\"humidity_pct\":75,\"rain_level\":1}'\n```")
+        st.info("⏳ **Waiting for data...**")
+        st.info("**Test:** `mosquitto_pub -h broker.hivemq.com -t \"river/monitoring/data\" -m '{\"water_level_cm\":25.5}'`")
         return
 
-    # Current status (ALWAYS latest)
+    # Current status
     latest = st.session_state.last_data
     if latest:
         water = latest["water_level_cm"]
@@ -201,24 +197,19 @@ def main():
         with col3:
             status_box("Rain", int(rain > 0), "rain")
 
-    # ===========================
-    # CHARTS
-    # ===========================
+    # Charts
     df = pd.DataFrame(st.session_state.logs)
     if len(df) >= 2:
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("📈 Water Level")
-            st.line_chart(df.set_index("datetime")["water_level_cm"])
+            st.line_chart(df.set_index("datetime")["water_level_cm"], use_container_width=True)
         with col2:
-            st.subheader("🌡️ Environment")
-            st.line_chart(df.set_index("datetime")[["temperature_c", "humidity_pct"]])
-    else:
-        st.info("📊 Need 2+ data points for charts")
+            st.subheader("🌡️ Environment") 
+            env_df = df.set_index("datetime")[["temperature_c", "humidity_pct"]]
+            st.line_chart(env_df, use_container_width=True)
 
-    # ===========================
-    # ML PREDICTION
-    # ===========================
+    # ML Prediction
     @st.cache_resource
     def load_model():
         try:
@@ -243,17 +234,13 @@ def main():
             </div>
             """, unsafe_allow_html=True)
         except:
-            st.info("Model loaded - waiting for compatible features")
+            st.info("Model loaded")
 
-    # ===========================
-    # DOWNLOAD
-    # ===========================
+    # Download
     if st.session_state.logs:
-        st.download_button(
-            "💾 Download CSV", 
-            pd.DataFrame(st.session_state.logs).to_csv().encode(),
-            "river_data.csv"
-        )
+        st.download_button("💾 Download CSV", 
+                          pd.DataFrame(st.session_state.logs).to_csv().encode(), 
+                          "river_data.csv")
 
 if __name__ == "__main__":
     main()
