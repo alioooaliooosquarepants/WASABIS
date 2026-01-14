@@ -58,6 +58,16 @@ def status_box(title, level, mode="danger"):
         </div>
     """, unsafe_allow_html=True)
 
+def ensure_csv_header():
+    """🔥 CREATE/ENSURE CSV EXISTS WITH PROPER HEADERS"""
+    if not os.path.exists(CSV_FILE):
+        df_init = pd.DataFrame(columns=[
+            "timestamp", "datetime", "water_level_cm", "temperature_c", 
+            "humidity_pct", "danger_level", "rain_level"
+        ])
+        df_init.to_csv(CSV_FILE, index=False)
+        st.sidebar.success(f"✅ Created {CSV_FILE} for GitHub sync")
+
 # ===========================
 # LOGGING
 # ===========================
@@ -67,7 +77,21 @@ def log_event(event):
     logging.info(event)
 
 # ===========================
-# MQTT CALLBACKS
+# 🔥 NEW: CSV APPENDING FUNCTION
+# ===========================
+def append_to_csv(row):
+    """🔥 APPEND SINGLE ROW TO CSV (GitHub ready)"""
+    try:
+        ensure_csv_header()
+        df_new = pd.DataFrame([row])
+        df_new.to_csv(CSV_FILE, mode='a', header=False, index=False)
+        return True
+    except Exception as e:
+        logging.error(f"CSV append error: {e}")
+        return False
+
+# ===========================
+# MQTT CALLBACKS - NOW SAVES TO CSV
 # ===========================
 def mqtt_model_callback(client, userdata, message):
     try:
@@ -93,6 +117,7 @@ def mqtt_model_callback(client, userdata, message):
         logging.exception("Model MQTT error: %s", e)
 
 def mqtt_data_callback(client, userdata, message):
+    """🔥 MODIFIED: NOW ALSO SAVES TO CSV FOR GITHUB"""
     try:
         payload = json.loads(message.payload.decode())
         row = {
@@ -104,10 +129,17 @@ def mqtt_data_callback(client, userdata, message):
             "danger_level": int(payload.get("danger_level", 0)),
             "rain_level": int(payload.get("rain_level", 0))
         }
+        
+        # 🔥 ADD TO MEMORY BUFFER (for real-time display)
         with buf_lock:
             recent_buf.append(row)
-    except Exception:
-        pass
+        
+        # 🔥 NEW: SAVE TO CSV (for GitHub persistence)
+        append_to_csv(row)
+        log_event(f"Data saved to CSV: water={row['water_level_cm']:.1f}cm")
+        
+    except Exception as e:
+        logging.exception("MQTT data error: %s", e)
 
 # ===========================
 # MAIN FUNCTION
@@ -117,9 +149,8 @@ def main():
     # STREAMLIT SETTINGS FIRST
     # ===========================
     st.set_page_config(page_title="River Monitor Dashboard", layout="wide")
-    st.title("🌊 River Monitoring Dashboard — Real-Time + ML")
+    st.title("🌊 River Monitoring Dashboard — Real-Time + GitHub CSV")
 
-    # Background styling
     st.markdown("""
     <style>
     body { background-color: #e0f7fa; }
@@ -144,6 +175,15 @@ def main():
         key="standard_height"
     )
     
+    # 🔥 CSV STATUS
+    st.sidebar.subheader("📊 CSV Status")
+    if os.path.exists(CSV_FILE):
+        csv_size = os.path.getsize(CSV_FILE)
+        st.sidebar.metric("CSV Size", f"{csv_size/1000:.1f} KB")
+        st.sidebar.success("✅ Ready for GitHub sync")
+    else:
+        st.sidebar.info("No CSV yet - waiting for MQTT data")
+    
     # Manual Override
     st.sidebar.subheader("🔧 Manual Override")
     manual_water = st.sidebar.number_input("Water Level (cm)", min_value=0.0, max_value=1000.0, value=None, key="manual_water")
@@ -160,13 +200,7 @@ def main():
     # ===========================
     @st.cache_resource
     def init_mqtt(broker, port, data_topic, model_topic):
-        def ensure_csv():
-            if not os.path.exists(CSV_FILE):
-                cols = ["timestamp", "datetime", "water_level_cm", "temperature_c", 
-                       "humidity_pct", "danger_level", "rain_level"]
-                pd.DataFrame(columns=cols).to_csv(CSV_FILE, index=False)
-        
-        ensure_csv()
+        ensure_csv_header()  # 🔥 ENSURE CSV EXISTS ON START
         client = mqtt.Client()
         client.on_message = lambda c,u,m: (
             mqtt_model_callback(c,u,m) if m.topic == model_topic else mqtt_data_callback(c,u,m)
@@ -176,7 +210,7 @@ def main():
             client.subscribe(data_topic)
             client.subscribe(model_topic)
             client.loop_start()
-            st.sidebar.success("✅ MQTT Connected")
+            st.sidebar.success("✅ MQTT Connected + CSV Ready")
             return client
         except Exception as e:
             st.sidebar.error(f"❌ MQTT Error: {e}")
@@ -192,8 +226,10 @@ def main():
         with buf_lock:
             df = pd.DataFrame(list(recent_buf))
         
+        # 🔥 ALSO LOAD FROM CSV AS BACKUP
         if df.empty and os.path.exists(CSV_FILE):
-            df = pd.read_csv(CSV_FILE).tail(RECENT_MAX)
+            csv_df = pd.read_csv(CSV_FILE)
+            df = pd.concat([df, csv_df.tail(RECENT_MAX)], ignore_index=True)
         
         if not df.empty:
             # Data validation
@@ -218,7 +254,7 @@ def main():
     df = load_data(standard_water_height)
     
     if df.empty:
-        st.info("⏳ Waiting for data... Check MQTT connection and topics.")
+        st.info("⏳ Waiting for MQTT data... CSV will be created automatically.")
         st.stop()
 
     # ===========================
@@ -244,7 +280,8 @@ def main():
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("📈 Water Level")
-        st.line_chart(df.set_index(df["datetime"] if "datetime" in df else range(len(df)))["water_level_cm"])
+        chart_data = df.set_index("datetime")["water_level_cm"] if "datetime" in df else df["water_level_cm"]
+        st.line_chart(chart_data)
     
     with col2:
         st.subheader("🌡️ Environment")
@@ -306,7 +343,7 @@ def main():
             # Risk horizon
             rise_rate = df["water_rise_rate"].iloc[-1]
             if rise_rate > 0:
-                time_to_danger = (35 - water) / rise_rate * 60  # minutes
+                time_to_danger = (35 - water) / rise_rate * 60
                 st.info(f"⏰ Estimated {time_to_danger:.0f} min to danger level")
                 
         except Exception as e:
