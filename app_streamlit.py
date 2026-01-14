@@ -185,47 +185,57 @@ def main():
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
         st.line_chart(df.set_index("datetime")["water_level_cm"])
-        # ===========================
-    # 🤖 AI PREDICTION
-    # ===========================
-    model = load_model()
+# ===========================
+# 🤖 AI PREDICTION (FIXED)
+# ===========================
+model = load_model()
 
-    if model and data:
-        st.subheader("🤖 AI Flood Prediction")
+if model and data:
+    st.subheader("🤖 AI Flood Prediction")
 
-        try:
-            latest_df = pd.DataFrame([data])
+    try:
+        latest_df = pd.DataFrame([data])
 
-            # Feature engineering (HARUS sama dengan training)
-            latest_df["water_level_norm"] = (
-                latest_df["water_level_cm"] / standard_height
-                if standard_height > 0 else 0
-            )
-            latest_df["rain"] = (latest_df["rain_level"] > 0).astype(int)
+        # ===== Feature engineering (SESUI TRAINING) =====
+        latest_df["water_level_norm"] = (
+            latest_df["water_level_cm"] / standard_height
+            if standard_height > 0 else 0
+        )
 
-            X = latest_df[[
-                "water_level_norm",
-                "rain",
-                "temperature_c",
-                "humidity_pct"
-            ]]
+        latest_df["rain"] = (latest_df["rain_level"] > 0).astype(int)
 
-            pred = model.predict(X)[0]
-            emoji = normalize_emoji(pred)
+        # 🔥 water_rise_rate (WAJIB ADA)
+        if len(st.session_state.logs) >= 2:
+            prev = st.session_state.logs[-2]["water_level_cm"]
+            curr = st.session_state.logs[-1]["water_level_cm"]
+            latest_df["water_rise_rate"] = curr - prev
+        else:
+            latest_df["water_rise_rate"] = 0.0
 
-            st.markdown(f"""
-            <div style="padding:30px; border-radius:20px;
-                        background:#01579b; color:white;
-                        text-align:center;">
-                <h1 style="font-size:70px;">{emoji}</h1>
-                <h2>{pred}</h2>
-            </div>
-            """, unsafe_allow_html=True)
+        # ===== PREDICT (FEATURE HARUS SAMA & URUT) =====
+        X = latest_df[[
+            "water_level_norm",
+            "rain",
+            "water_rise_rate"
+        ]]
 
-        except Exception as e:
-            st.warning(f"Prediction error: {e}")
+        pred = model.predict(X)[0]
+        emoji = normalize_emoji(pred)
+
+        st.markdown(f"""
+        <div style="padding:30px; border-radius:20px;
+                    background:#01579b; color:white;
+                    text-align:center;">
+            <h1 style="font-size:70px;">{emoji}</h1>
+            <h2>{pred}</h2>
+        </div>
+        """, unsafe_allow_html=True)
+
+    except Exception as e:
+        st.warning(f"Prediction error: {e}")
 
 if __name__ == "__main__":
     main()
+
 
 
