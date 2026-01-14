@@ -185,8 +185,8 @@ def main():
     if len(st.session_state.logs) > 1:
         df = pd.DataFrame(st.session_state.logs)
         st.line_chart(df.set_index("datetime")["water_level_cm"])
-    # ===========================
-    # 🤖 AI PREDICTION (FIXED)
+       # ===========================
+    # 🤖 AI FLOOD PREDICTION (FINAL FIX)
     # ===========================
     model = load_model()
 
@@ -202,14 +202,15 @@ def main():
             else:
                 water_rise_rate = 0.0
 
-            # ---- EXACT training features ----
+            # ---- EXACT FEATURES USED DURING TRAINING ----
             X = pd.DataFrame([{
                 "water_level_norm": (
                     data["water_level_cm"] / standard_height
                     if standard_height > 0 else 0.0
                 ),
                 "rain": int(data["rain_level"] > 0),
-                "water_rise_rate": water_rise_rate
+                "water_rise_rate": water_rise_rate,
+                "humidity_pct": float(data["humidity_pct"])
             }])
 
             pred = model.predict(X)[0]
@@ -228,5 +229,3 @@ def main():
             st.warning(f"Prediction error: {e}")
 if __name__ == "__main__":
     main()
-
-
