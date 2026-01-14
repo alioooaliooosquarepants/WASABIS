@@ -189,7 +189,6 @@ def main():
 # 🤖 AI PREDICTION (FIXED)
 # ===========================
 model = load_model()
-
 if model and data:
     st.subheader("🤖 AI Flood Prediction")
 
@@ -236,6 +235,3 @@ if model and data:
 
 if __name__ == "__main__":
     main()
-
-
-
